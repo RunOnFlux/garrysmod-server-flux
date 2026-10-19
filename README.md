@@ -82,4 +82,6 @@ soft-redeploys onto a new image, so a published `:latest` reaches running server
 
 ## Versions
 
+- **1.0.1** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process
+  substitution inside `$(...)` wrote its log lines into the captured result).
 - **1.0.0** (2026-10-08): first release.

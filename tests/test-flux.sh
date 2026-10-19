@@ -53,5 +53,22 @@ check "a bad token is said and left out" "0" "$(status grep -q 'GMOD_GSLT' <<<"$
 words="$(bash -c "printf '[%s]' $(launch GMOD_HOSTNAME='Flux Test Server' GMOD_RCON_PASSWORD=abc12345)")"
 check "the shell hands srcds the quoted name as one word" "0" "$(status grep -qF '[+hostname]["Flux Test Server"]' <<<"${words}")"
 
+# --- The entrypoint: launcher warnings never reach the launch line --------------------------------
+# The real launch-building lines of start_generation, run with a launcher that warns on stderr. A
+# process substitution inside $(...) would write the logged warning into the launch line.
+# shellcheck disable=SC2016
+block="$(sed -n '/^  launch="\$(python3/,/^  fi$/p' scripts/flux-entrypoint.sh)"
+# shellcheck disable=SC2329
+(
+  python3() { echo "./srcds_run_64 -game garrysmod"; echo "launch warning: bad value" >&2; }
+  flux_log() { echo "LOG $*" >>"${tmp}/entry.log"; echo "$*"; }
+  launch=""
+  eval "${block//return 1/true}"
+  printf '%s' "${launch}" >"${tmp}/launch.out"
+) >/dev/null
+captured="$(cat "${tmp}/launch.out")"
+check "the warning is still logged" "LOG launch: launch warning: bad value" "$(cat "${tmp}/entry.log")"
+check "launcher warnings stay out of the launch line" "./srcds_run_64 -game garrysmod" "${captured}"
+
 printf '%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]
