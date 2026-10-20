@@ -29,7 +29,10 @@ s="${FLUX_SERVER_DIR}"
 g="${FLUX_GAME_DIR}"
 
 rm -f "${FLUX_RESTART_MARKER}"
-mkdir -p "${s}" "${g}" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+mkdir -p "${s}" "${g}" "${g}/flux" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+# An older image kept flux.log on the synced data volume: move it here, once.
+flux_log_migrate "${FLUX_GAME_DIR}/flux/flux.log"
+flux_banner "Garry's Mod"
 
 if ! port="$(flux_valid_port "${GAME_PORT:-27015}")"; then
   flux_log "ERROR GAME_PORT='${GAME_PORT:-}' is not a port from 1024 to 65535; refusing to start"
@@ -140,6 +143,7 @@ start_generation() {
   flux_prune "${FLUX_GAME_LOG_DIR}" '*-console.log' "${FLUX_GAME_LOG_KEEP}"
   [ "${terminating}" = "1" ] && return 2
 
+  flux_banner "Garry's Mod"
   flux_log "starting the server (generation ${generation})"
   (
     cd "${s}" || exit 1

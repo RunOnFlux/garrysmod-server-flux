@@ -51,8 +51,8 @@ the server starts on the rest. Gameplay cvars (sandbox limits, TTT, FastDL) belo
 
 | Path | What | On Flux |
 |---|---|---|
-| `/mnt/gmod/server` | The install, about 6 GB. Disposable: SteamCMD rebuilds it | `ml:` (local, never synced) |
-| `/mnt/gmod/server/garrysmod` | The game folder: `cfg/` (server.cfg, the ban list), `data/`, `addons/`, `gamemodes/`, `maps/`, `sv.db`, and `flux/` (our log and the console logs) | primary, `g:` |
+| `/mnt/gmod/server` | The install, about 6 GB. Disposable: SteamCMD rebuilds it. Also `flux-logs/flux.log` (our supervisor log, 5 MB then one `.1`): local, never synced | `ml:` (local, never synced) |
+| `/mnt/gmod/server/garrysmod` | The game folder: `cfg/` (server.cfg, the ban list), `data/`, `addons/`, `gamemodes/`, `maps/`, `sv.db`, and `flux/` (the console logs) | primary, `g:` |
 | `/mnt/gmod/server/garrysmod/cache` | Workshop downloads. Downloaded again on a new node | `ml:` |
 
 The game folder is synced whole, its ~1.1 GB of stock .vpk files included: every customer file
@@ -82,6 +82,7 @@ soft-redeploys onto a new image, so a published `:latest` reaches running server
 
 ## Versions
 
+- **1.0.2** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/gmod/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.0.1** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process
   substitution inside `$(...)` wrote its log lines into the captured result).
 - **1.0.0** (2026-10-08): first release.
