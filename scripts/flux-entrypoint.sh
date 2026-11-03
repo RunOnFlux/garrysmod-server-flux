@@ -42,6 +42,7 @@ export GAME_PORT="${port}"
 flux_log "flux-entrypoint starting (image ${FLUX_IMAGE_VERSION:-dev}, port ${port})"
 
 game_pid=""
+ready_pid=""
 game_rc=0
 terminating=0
 generation=0
@@ -153,11 +154,31 @@ start_generation() {
     exec script -qfec "${launch}; echo \$? >${FLUX_EXIT_FILE}" /dev/null <"${FLUX_CONSOLE_FIFO}"
   ) > >(console_writer) 2>&1 &
   game_pid=$!
+  ready_watcher &
+  ready_pid=$!
   return 0
+}
+
+# Says so in the log, once, when the server first answers the Steam query: the port is bound, which
+# srcds only does after the Workshop collection is mounted and the map has loaded. The line is the
+# one the panel waits for.
+# shellcheck disable=SC2329  # run as a background job
+ready_watcher() {
+  until python3 /opt/flux/flux-a2s.py "${GAME_PORT}"; do
+    sleep 5
+  done
+  flux_log "ready: the server answers on port ${GAME_PORT}, players can join"
 }
 
 sweep_generation() {
   pkill -KILL -f "${FLUX_GAME_PROCESS}" 2>/dev/null
+  # Reaped here, with its "Killed" notice discarded: bash would print it into the container log.
+  # Only while it is still one of OUR running jobs: once it has logged `ready:` it has exited and
+  # been reaped, and its number may belong to an unrelated process weeks later.
+  if [ -n "${ready_pid}" ] && [[ " $(jobs -pr | tr '\n' ' ') " == *" ${ready_pid} "* ]]; then
+    { kill -KILL "${ready_pid}" && wait "${ready_pid}"; } 2>/dev/null
+  fi
+  ready_pid=""
   game_pid=""
 }
 

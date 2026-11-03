@@ -20,6 +20,7 @@ marketplace sells:
 | Bans | Forgotten on restart unless the line said `+exec banned_user.cfg` | Always on the line |
 | Console commands from inside | None | `flux-console <command>` prints the answer |
 | `docker stop` | srcds killed | `quit` on the console: 1.4 s, exit 0 (measured) |
+| Health | Always healthy (the check matched itself) | Healthy only once the server answers the Steam query |
 | Server crashes | srcds_run's own restart loop | Restarted in place, updated first; the container ends after 5 crashes in an hour (exit 42) |
 
 ## Configuration
@@ -82,6 +83,7 @@ soft-redeploys onto a new image, so a published `:latest` reaches running server
 
 ## Versions
 
+- **1.0.3** (2026-11-03): the health check tells the truth. It was `pgrep -f srcds_linux`, which matched its own `sh -c` and was healthy from the first second, so the panel said Online while SteamCMD and then the Workshop collection were still downloading and the console and RCON answered nothing (a 181-addon collection took over half an hour; the owner restarted twice, each restart starting the wait again). It is now a Steam A2S query to the container's own address (`scripts/flux-a2s.py`; srcds binds that address, not the loopback), so it passes only once the addons are mounted, the map has loaded and the port answers. Start period 3 hours, which covers the container's first start only: after an in-place restart (a crash, a console quit) a long Workshop download reads as unhealthy until the server answers again; nothing acts on that. The supervisor logs `ready: the server answers on port N` once, which the panel reads.
 - **1.0.2** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/gmod/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.0.1** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process
   substitution inside `$(...)` wrote its log lines into the captured result).

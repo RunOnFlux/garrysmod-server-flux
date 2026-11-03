@@ -23,7 +23,7 @@ RUN dpkg --add-architecture i386 && apt-get update -y && \
         ca-certificates curl procps tzdata python3 util-linux lib32gcc-s1 lib32stdc++6 libtinfo6:i386 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/flux-lib.sh scripts/flux-entrypoint.sh scripts/flux-console.sh scripts/flux-launch.py /opt/flux/
+COPY scripts/flux-lib.sh scripts/flux-entrypoint.sh scripts/flux-console.sh scripts/flux-launch.py scripts/flux-a2s.py /opt/flux/
 RUN chmod 0755 /opt/flux/*.sh /opt/flux/*.py && \
     ln -s /opt/flux/flux-console.sh /usr/local/bin/flux-console
 
@@ -36,8 +36,17 @@ VOLUME ["/mnt/gmod/server", "/mnt/gmod/server/garrysmod"]
 # One port: the game and the Steam query over UDP, RCON over TCP.
 EXPOSE 27015/udp 27015/tcp
 
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30m --retries=3 \
-    CMD pgrep -f srcds_linux >/dev/null || exit 1
+# Healthy means the server ANSWERS the Steam query on its game port, which srcds only does after the
+# Workshop collection is mounted and the map has loaded. (The check this replaces, `pgrep -f
+# srcds_linux`, matched its own `sh -c` and was healthy from the first second.) The start period is
+# long on purpose: a first start downloads about 7 GB and then the whole Workshop collection, and
+# a few hundred addons take hours; a failure inside it does not count. It covers the CONTAINER's
+# first start only: after an in-place restart (a crash, a console quit) the container is already
+# healthy, and a long download then reads as unhealthy after about 2.5 minutes until the server
+# answers again. Nothing on Flux acts on that (FluxOS ignores Docker health); the hub's readiness
+# reads the log, not this.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=3h --retries=5 \
+    CMD python3 /opt/flux/flux-a2s.py
 
 ENTRYPOINT []
 CMD ["/opt/flux/flux-entrypoint.sh"]

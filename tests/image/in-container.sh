@@ -29,6 +29,7 @@ for tool in steamcmd python3 pgrep pkill script mkfifo timeout tail sed; do
 done
 check "flux-console is on the PATH" "0" "$(status command -v flux-console)"
 check "flux-launch.py runs" "0" "$(status python3 /opt/flux/flux-launch.py)"
+check "flux-a2s.py is in the image and says no when nothing answers" "1" "$(status python3 /opt/flux/flux-a2s.py 31999)"
 for script in flux-entrypoint.sh flux-console.sh flux-lib.sh; do
   check "${script} parses" "0" "$(status bash -n "/opt/flux/${script}")"
 done
@@ -54,6 +55,18 @@ exec -a srcds_linux bash -c '
 [ -t 0 ] && [ -t 1 ] || { sleep 1000; exit 1; }
 echo "args: $*"
 echo "VAC secure mode is activated."
+if [ -z "${STUB_SILENT:-}" ]; then
+  python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# Like srcds: the address of the container itself, not 0.0.0.0 and not the loopback.
+s.bind((socket.gethostbyname(socket.gethostname()), 31000))
+while True:
+    _, a = s.recvfrom(4096)
+    s.sendto(b\"\\xff\\xff\\xff\\xffA\\x01\\x02\\x03\\x04\", a)
+" &
+  trap "kill $! 2>/dev/null" EXIT
+fi
 while IFS= read -r line; do
   case "${line}" in
     say\ *) echo "Console: ${line#say }" ;;
@@ -77,6 +90,8 @@ check "the launch line arrives as words, the quoted name as one" "0" "$(status g
 check "the quoted name" "0" "$(status grep -qh '+hostname "Test Server"' ${logs}/*-console.log)"
 check "the console reaches the container output too" "0" "$(status grep -q 'VAC secure' /tmp/sup.log)"
 check "the build is logged" "0" "$(status grep -q "Garry's Mod build 260917" /tmp/sup.log)"
+check "the server answering the Steam query is said in the log" "0" "$(status wait_for "grep -q 'ready: the server answers on port 31000' /tmp/sup.log" 20)"
+check "the health probe says yes while it answers" "0" "$(status python3 /opt/flux/flux-a2s.py 31000)"
 check "flux-console reaches the console and prints the answer" "0" "$(status grep -q 'Console: hi there' <<<"$(flux-console say hi there)")"
 
 for n in 1 2 3 4 5 6 7 8; do flux-console say "filler line number ${n} to roll the log over" >/dev/null; done
@@ -86,6 +101,7 @@ check "the console log is rotated and pruned" "1" "$(status test "$(find "${logs
 flux-console crash >/dev/null
 check "a crash is restarted in place" "0" "$(status wait_for "grep -q 'restarting the server in place' /tmp/sup.log" 10)"
 check "and the new server comes up" "0" "$(status wait_for "grep -q 'generation 2' /tmp/sup.log" 10)"
+check "each generation says when it is ready" "0" "$(status wait_for "[ \"\$(grep -c 'ready: the server answers' /tmp/sup.log)\" -ge 2 ]" 20)"
 check "the crash is reported with its code" "0" "$(status grep -q 'exit 139' /tmp/sup.log)"
 sleep 2
 
@@ -94,6 +110,21 @@ wait "${sup}"
 check "a stop exits 0" "0" "$?"
 check "a stop is a console quit" "0" "$(status grep -q 'stopped on request (server exited 0)' /tmp/sup.log)"
 check "nothing is left running" "1" "$(status pgrep -f 'srcds_linux|script -qfec')"
+
+# A server that never answers (the Workshop download, the map load) is never called ready, and the
+# probe says no.
+rm -rf /tmp/srv2
+FLUX_SERVER_DIR=/tmp/srv2 STUB_SILENT=1 GAME_PORT=31001 /opt/flux/flux-entrypoint.sh >/tmp/sup2.log 2>&1 &
+sup2=$!
+check "a silent server is up" "0" "$(status wait_for "grep -q 'VAC secure' /tmp/sup2.log" 20)"
+sleep 6
+check "and is not called ready" "1" "$(status grep -q 'ready: the server answers' /tmp/sup2.log)"
+check "and the health probe says no" "1" "$(status python3 /opt/flux/flux-a2s.py 31001)"
+kill -TERM "${sup2}"
+wait "${sup2}"
+check "and it still stops on a console quit, exit 0" "0" "$?"
+check "with the quit and not a kill" "0" "$(status grep -q 'stopped on request (server exited 0)' /tmp/sup2.log)"
+check "nothing is left running after it" "1" "$(status pgrep -f 'srcds_linux|script -qfec')"
 
 # --- flux.log is local; the banner ----------------------------------------------------------------
 fl_srv=/tmp/srv
