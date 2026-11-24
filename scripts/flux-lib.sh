@@ -113,9 +113,7 @@ flux_restarts_in_window() {
   printf '%s' "${kept[*]}"
 }
 
-# $1 = why the last generation ended. One that was asked for (the console's `quit`, `_restart`)
-# is the plan working, not a crash.
-# FLUX_RESTART_TIME: "HH:MM" (24 h, in TZ, UTC when unset) prints it zero-padded; empty or off/none/false/0
+# GMOD_RESTART_TIME: "HH:MM" (24 h, in TZ, UTC when unset) prints it zero-padded; empty or off/none/false/0
 # prints nothing and succeeds (no daily restart); anything else fails.
 flux_restart_time() {
   local value="${1-}" h m
@@ -134,11 +132,15 @@ flux_next_daily() {
   local now="$1" at
   at="$(date -d "$(date -d "@${now}" +%F) $2" +%s 2>/dev/null)" || return 1
   if [ "${at}" -le "${now}" ]; then
-    at="$(date -d "$(date -d "@$((now + 86400))" +%F) $2" +%s 2>/dev/null)" || return 1
+    # The next CALENDAR day, not now + 86400 s: on a 25-hour day that sum is still today (the restart
+    # would repeat for an hour), and on a 23-hour day it skips one.
+    at="$(date -d "$(date -d "$(date -d "@${now}" +%F) + 1 day" +%F) $2" +%s 2>/dev/null)" || return 1
   fi
   printf '%s' "${at}"
 }
 
+# $1 = why the last generation ended. One that was asked for (the console's `quit`, `_restart`)
+# is the plan working, not a crash.
 flux_restart_counts() {
   case "$1" in
     planned* | requested*) return 1 ;;

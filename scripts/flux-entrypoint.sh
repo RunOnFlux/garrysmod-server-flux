@@ -119,7 +119,8 @@ update_server() {
     wait "${steam_pid}"
     steam_rc=$?
     if [ "${terminating}" = "1" ]; then
-      # A stop during the download: SteamCMD ends with it, the next start resumes.
+      # A stop during the download: SteamCMD ends with it. A plain update resumes at the next start; a fresh
+      # install over the top (the 0x6 fallback) starts the download again, with the old build's record put back.
       kill "${steam_pid}" "${tail_pid}" 2>/dev/null
       return 1
     fi

@@ -44,6 +44,11 @@ check "a minute out of range is refused" "1" "$(status flux_restart_time 06:60)"
 # 2026-06-01 05:00:00 UTC = 1780290000
 check "later today when it has not passed" "1780293600" "$(TZ=UTC flux_next_daily 1780290000 06:00)"
 check "tomorrow when it has passed" "1780380000" "$(TZ=UTC flux_next_daily 1780293600 06:00)"
+# Clock changes (Europe/Lisbon, 2026): 10-25 01:59 WEST -> 01:00 WET (a 25 h day), 03-29 01:00 WET -> 02:00 WEST (a 23 h day).
+lis() { TZ=Europe/Lisbon date -d "@$(TZ=Europe/Lisbon flux_next_daily "$(TZ=Europe/Lisbon date -d "$1" +%s)" "$2")" '+%F %H:%M'; }
+check "the 25-hour day: 00:15 already passed, the next is tomorrow's, not a repeat an hour on" "2026-10-26 00:15" "$(lis '2026-10-25 00:30' 00:15)"
+check "and later the same day, still tomorrow" "2026-10-26 00:15" "$(lis '2026-10-25 00:59' 00:15)"
+check "the 23-hour day: 23:30 asking for 23:00 gets the next day (Sunday), not a skipped one" "2026-03-29 23:00" "$(lis '2026-03-28 23:30' 23:00)"
 check "a planned restart is not counted against the budget" "1" "$(status flux_restart_counts 'planned: the daily restart (06:00 UTC)')"
 
 # --- Human players from an A2S_INFO reply ---------------------------------------------------------
