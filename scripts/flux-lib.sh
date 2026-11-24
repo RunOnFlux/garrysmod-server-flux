@@ -115,6 +115,30 @@ flux_restarts_in_window() {
 
 # $1 = why the last generation ended. One that was asked for (the console's `quit`, `_restart`)
 # is the plan working, not a crash.
+# FLUX_RESTART_TIME: "HH:MM" (24 h, in TZ, UTC when unset) prints it zero-padded; empty or off/none/false/0
+# prints nothing and succeeds (no daily restart); anything else fails.
+flux_restart_time() {
+  local value="${1-}" h m
+  case "${value,,}" in
+    "" | off | none | false | 0) printf ''; return 0 ;;
+  esac
+  [[ "${value}" =~ ^([0-9]{1,2}):([0-9]{2})$ ]] || return 1
+  h=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]}))
+  [ "${h}" -le 23 ] && [ "${m}" -le 59 ] || return 1
+  printf '%02d:%02d' "${h}" "${m}"
+}
+
+# The next occurrence of HH:MM ($2) after the epoch second $1, as an epoch second. Fails for a time that
+# does not exist on that day (a clock change skips it): the caller looks again later.
+flux_next_daily() {
+  local now="$1" at
+  at="$(date -d "$(date -d "@${now}" +%F) $2" +%s 2>/dev/null)" || return 1
+  if [ "${at}" -le "${now}" ]; then
+    at="$(date -d "$(date -d "@$((now + 86400))" +%F) $2" +%s 2>/dev/null)" || return 1
+  fi
+  printf '%s' "${at}"
+}
+
 flux_restart_counts() {
   case "$1" in
     planned* | requested*) return 1 ;;

@@ -37,6 +37,7 @@ The variable names are the ones the Flux games hub writes.
 | `GMOD_PASSWORD` | | `+sv_password`, no spaces or quotes |
 | `GMOD_RCON_PASSWORD` | | `+rcon_password`, no spaces or quotes. Without it RCON stays off |
 | `GMOD_GSLT` | | `+sv_setsteamaccount`: a Steam game server token for App ID 4000 |
+| `GMOD_RESTART_TIME` | | `HH:MM` (in `TZ`, UTC when unset): restart once a day on an empty server, taking any game update. Empty or `off` = never |
 | `GMOD_EXTRA_ARGS` | | Anything else for the command line, as shell words. Not the port |
 | `GAME_PORT` | `27015` | The port srcds binds: game and A2S over UDP, RCON over TCP |
 | `SKIP_UPDATE` | | `true`: start the installed build without asking Steam |
@@ -83,6 +84,7 @@ soft-redeploys onto a new image, so a published `:latest` reaches running server
 
 ## Versions
 
+- **1.0.4** (2026-11-25): updates survive a Steam that no longer serves the installed build. SteamCMD's depotcache lives on the install volume (a redeploy kept losing it, and the first update after one failed with `state is 0x6`), a `state is 0x6` is a failure whatever SteamCMD's exit code says and is answered once with a fresh install over the top (never for a network failure), and a stop during a download ends at once with exit 0 (SteamCMD runs in the background; it used to wait out Docker's 10 seconds and end with 42). New `GMOD_RESTART_TIME=HH:MM` (in `TZ`, UTC when unset): a daily restart on an empty server (up to `FLUX_RESTART_WAIT_MINUTES`, 30, waiting for 0 human players by A2S), which also takes any game update; written to `/tmp/flux-next-restart` for the panel and logged as `planned: the daily restart`, so it does not count against the crash budget. Empty or `off` = never.
 - **1.0.3** (2026-11-03): the health check tells the truth. It was `pgrep -f srcds_linux`, which matched its own `sh -c` and was healthy from the first second, so the panel said Online while SteamCMD and then the Workshop collection were still downloading and the console and RCON answered nothing (a 181-addon collection took over half an hour; the owner restarted twice, each restart starting the wait again). It is now a Steam A2S query to the container's own address (`scripts/flux-a2s.py`; srcds binds that address, not the loopback), so it passes only once the addons are mounted, the map has loaded and the port answers. Start period 3 hours, which covers the container's first start only: after an in-place restart (a crash, a console quit) a long Workshop download reads as unhealthy until the server answers again; nothing acts on that. The supervisor logs `ready: the server answers on port N` once, which the panel reads.
 - **1.0.2** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/gmod/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.0.1** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process

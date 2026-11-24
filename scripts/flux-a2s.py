@@ -78,7 +78,60 @@ def answers(port, hosts=None, timeout=3.0, sock=None):
         s.close()
 
 
+def parse_info(data):
+    """The number of HUMAN players in an A2S_INFO reply (players minus bots), or None when `data` is not one.
+
+    Source reply: FF FF FF FF 'I', protocol byte, then four NUL-terminated strings (name, map, folder,
+    game), the app id (2 bytes), players, max players, bots (one byte each).
+    """
+    if not data.startswith(HEADER + b"I") or len(data) < 6:
+        return None
+    pos = 6
+    for _ in range(4):
+        end = data.find(b"\x00", pos)
+        if end < 0:
+            return None
+        pos = end + 1
+    pos += 2
+    if len(data) < pos + 3:
+        return None
+    players, _max, bots = data[pos], data[pos + 1], data[pos + 2]
+    return max(players - bots, 0)
+
+
+def humans(port, hosts=None, timeout=3.0, sock=None):
+    """Human players on the server right now, or None when it did not say (never "0" by guesswork).
+
+    A server may answer the first query with a challenge (0x41): the query is sent again with the
+    challenge appended, as the protocol asks.
+    """
+    s = sock or socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(timeout)
+        for host in (hosts or local_addresses()):
+            try:
+                s.sendto(QUERY, (host, port))
+            except OSError:
+                continue
+        data, addr = s.recvfrom(4096)
+        if data.startswith(HEADER + b"A") and len(data) >= 9:
+            s.sendto(QUERY + data[5:9], addr)
+            data, _ = s.recvfrom(4096)
+        return parse_info(data)
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
 def main(argv):
+    if len(argv) > 1 and argv[1] == "players":
+        # flux-a2s.py players [port]: the human count on stdout, nothing and exit 1 when unknown.
+        n = humans(game_port(argv[2] if len(argv) > 2 else os.environ.get("GAME_PORT")))
+        if n is None:
+            return 1
+        print(n)
+        return 0
     port = game_port(argv[1] if len(argv) > 1 else os.environ.get("GAME_PORT"))
     return 0 if answers(port) else 1
 

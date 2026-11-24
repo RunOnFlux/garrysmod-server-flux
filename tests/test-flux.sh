@@ -33,6 +33,33 @@ check "a requested quit is not counted" "1" "$(status flux_restart_counts 'reque
 check "a crash is counted" "0" "$(status flux_restart_counts 'the server ended on its own (exit 139)')"
 check "keeps the newest" $'c\nd' "$(flux_files_to_prune 2 a b c d)"
 
+# The daily restart time: HH:MM, zero-padded; empty or off is "never"; anything else is refused.
+check "6:00 is padded" "06:00" "$(flux_restart_time 6:00)"
+check "23:59 is accepted" "23:59" "$(flux_restart_time 23:59)"
+check "empty is never" "" "$(flux_restart_time '')"
+check "off is never" "" "$(flux_restart_time OFF)"
+check "24:00 is refused" "1" "$(status flux_restart_time 24:00)"
+check "6 is refused" "1" "$(status flux_restart_time 6)"
+check "a minute out of range is refused" "1" "$(status flux_restart_time 06:60)"
+# 2026-06-01 05:00:00 UTC = 1780290000
+check "later today when it has not passed" "1780293600" "$(TZ=UTC flux_next_daily 1780290000 06:00)"
+check "tomorrow when it has passed" "1780380000" "$(TZ=UTC flux_next_daily 1780293600 06:00)"
+check "a planned restart is not counted against the budget" "1" "$(status flux_restart_counts 'planned: the daily restart (06:00 UTC)')"
+
+# --- Human players from an A2S_INFO reply ---------------------------------------------------------
+a2s() { python3 -c "
+import importlib.util as u, sys
+sp = u.spec_from_file_location('a', 'scripts/flux-a2s.py'); m = u.module_from_spec(sp); sp.loader.exec_module(m)
+print(m.parse_info(eval(sys.argv[1])))" "$1"; }
+# players, max, bots after the name, map, folder, game strings and the app id.
+info() { printf 'b"\\xff\\xff\\xff\\xffI\\x11my server\\x00gm_construct\\x00garrysmod\\x00Sandbox\\x00\\xa0\\x0f" + bytes([%s, 16, %s])' "$1" "$2"; }
+check "5 players, 0 bots is 5" "5" "$(a2s "$(info 5 0)")"
+check "5 players of which 2 bots is 3 humans" "3" "$(a2s "$(info 5 2)")"
+check "an empty server is 0" "0" "$(a2s "$(info 0 0)")"
+check "a challenge is not an info" "None" "$(a2s 'b"\xff\xff\xff\xffA\x01\x02\x03\x04"')"
+check "garbage is not an info" "None" "$(a2s 'b"HTTP/1.1 400"')"
+check "a truncated info is not an info" "None" "$(a2s 'b"\xff\xff\xff\xffI\x11name\x00map"')"
+
 # --- The launch line ---------------------------------------------------------------------------
 check "defaults" "./srcds_run -game garrysmod -norestart -console -port 27015 +exec banned_user.cfg +maxplayers 16 +gamemode sandbox +map gm_construct" "$(launch)"
 check "everything set, quoted values as one word with their quotes" \
