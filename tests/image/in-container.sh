@@ -47,7 +47,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "${dir}" ] || exit 0
-mkdir -p "${dir}/garrysmod"
+acf="${dir}/steamapps/appmanifest_4020.acf"
+# /tmp/fake-slow: a long download (a stop must not wait for it). /tmp/fake-0x6: an update from an installed
+# build fails with Steam's "state is 0x6" (exit code = the file's content) until the record is gone, as a fresh
+# install over the top is what gets past it. /tmp/steamcmd-calls counts the runs.
+echo run >>/tmp/steamcmd-calls
+if [ -f /tmp/fake-slow ]; then sleep 30; exit 0; fi
+if [ -f /tmp/fake-0x6 ] && [ -f "${acf}" ]; then
+  echo "Error! App '4020' state is 0x6 after update job."
+  exit "$(cat /tmp/fake-0x6)"
+fi
+mkdir -p "${dir}/garrysmod" "${dir}/steamapps"
+echo '"AppState" { "appid" "4020" }' >"${acf}"
 echo 260917 >"${dir}/garrysmod/garrysmod.ver"
 cat >"${dir}/srcds_run" <<'GAME'
 #!/bin/bash
@@ -60,10 +71,13 @@ if [ -z "${STUB_SILENT:-}" ]; then
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # Like srcds: the address of the container itself, not 0.0.0.0 and not the loopback.
-s.bind((socket.gethostbyname(socket.gethostname()), 31000))
+s.bind((socket.gethostbyname(socket.gethostname()), ${GAME_PORT:-31000}))
 while True:
-    _, a = s.recvfrom(4096)
-    s.sendto(b\"\\xff\\xff\\xff\\xffA\\x01\\x02\\x03\\x04\", a)
+    d, a = s.recvfrom(4096)
+    if len(d) > 25:
+        s.sendto(b\"\\xff\\xff\\xff\\xffI\\x11n\\x00m\\x00f\\x00g\\x00\\x00\\x00\\x00\\x10\\x00\", a)
+    else:
+        s.sendto(b\"\\xff\\xff\\xff\\xffA\\x01\\x02\\x03\\x04\", a)
 " &
   trap "kill $! 2>/dev/null" EXIT
 fi
@@ -125,6 +139,61 @@ wait "${sup2}"
 check "and it still stops on a console quit, exit 0" "0" "$?"
 check "with the quit and not a kill" "0" "$(status grep -q 'stopped on request (server exited 0)' /tmp/sup2.log)"
 check "nothing is left running after it" "1" "$(status pgrep -f 'srcds_linux|script -qfec')"
+
+# --- Updates: the depotcache, "state is 0x6", a stop during a download -----------------------------------
+# The Steam home's depotcache is a link onto the install volume (a redeploy keeps the manifests).
+check "the depotcache is on the install volume" "0" "$(status test -L /root/.local/share/Steam/depotcache)"
+check "and points into it" "/tmp/srv/flux-steam/depotcache" "$(readlink /root/.local/share/Steam/depotcache)"
+
+# An installed build whose update fails with "state is 0x6" and exit 0: the old build must NOT just start;
+# the install is redone once (fresh), which the stand-in accepts.
+echo 0 >/tmp/fake-0x6
+: >/tmp/steamcmd-calls
+FLUX_SERVER_DIR=/tmp/srv GAME_PORT=31002 /opt/flux/flux-entrypoint.sh >/tmp/sup3.log 2>&1 &
+sup3=$!
+check "state 0x6 with exit 0 is a failure, not a started old build" "0" "$(status wait_for "grep -q 'updating as a new install' /tmp/sup3.log" 20)"
+check "and the fresh install gets the server up" "0" "$(status wait_for "grep -q 'ready: the server answers on port 31002' /tmp/sup3.log" 30)"
+check "the retry is not a validate (a fresh install, not a re-hash)" "1" "$(status grep -q 'with validate' /tmp/sup3.log)"
+check "SteamCMD ran twice" "2" "$(wc -l </tmp/steamcmd-calls | tr -d ' ')"
+kill -TERM "${sup3}"
+wait "${sup3}"
+check "and it stops with 0" "0" "$?"
+rm -f /tmp/fake-0x6
+
+# A stop in the middle of a download: the supervisor ends at once with 0, not after Docker's 10 s kill.
+touch /tmp/fake-slow
+rm -rf /tmp/srv4
+FLUX_SERVER_DIR=/tmp/srv4 GAME_PORT=31003 /opt/flux/flux-entrypoint.sh >/tmp/sup4.log 2>&1 &
+sup4=$!
+check "a slow update is under way" "0" "$(status wait_for "[ -s /tmp/steamcmd-calls ] && grep -q 'updating the server from Steam' /tmp/sup4.log" 10)"
+sleep 1
+t0="$(date +%s)"
+kill -TERM "${sup4}"
+wait "${sup4}"
+rc4=$?
+check "a stop during the download exits 0, not 42" "0" "${rc4}"
+check "within a few seconds" "0" "$(status test $(($(date +%s) - t0)) -le 5)"
+check "and says it was stopped before the server started" "0" "$(status grep -q 'stopped on request before the server started' /tmp/sup4.log)"
+check "SteamCMD is not left running" "1" "$(status pgrep -x steamcmd)"
+rm -f /tmp/fake-slow
+
+# --- The daily restart: GMOD_RESTART_TIME, on an empty server ------------------------------------------
+# A time about a minute away, 0 humans (the stand-in answers the challenge with an info of 0 players).
+rm -rf /tmp/srv5
+soon="$(date -u -d '+65 seconds' +%H:%M)"
+FLUX_SERVER_DIR=/tmp/srv5 GAME_PORT=31004 GMOD_RESTART_TIME="${soon}" FLUX_RESTART_WAIT_MINUTES=1 /opt/flux/flux-entrypoint.sh >/tmp/sup5.log 2>&1 &
+sup5=$!
+check "the first generation is ready" "0" "$(status wait_for "grep -q 'ready: the server answers on port 31004' /tmp/sup5.log" 30)"
+check "the next restart time is published for the panel" "0" "$(status test -s /tmp/flux-next-restart)"
+check "at the set time an empty server is restarted as planned" "0" "$(status wait_for "grep -q 'planned: the daily restart: restarting the server' /tmp/sup5.log" 150)"
+check "in place, as a restart someone asked for" "0" "$(status wait_for "grep -q 'planned: the daily restart (${soon} UTC): restarting the server in place' /tmp/sup5.log" 20)"
+check "and the next generation comes up" "0" "$(status wait_for "[ \"\$(grep -c 'ready: the server answers on port 31004' /tmp/sup5.log)\" -ge 2 ]" 30)"
+check "it does not count against the crash budget" "1" "$(status grep -q 'restarts within' /tmp/sup5.log)"
+kill -TERM "${sup5}"
+wait "${sup5}"
+check "and stops with 0" "0" "$?"
+check "a bad restart time is said and ignored" "0" "$(status grep -q "GMOD_RESTART_TIME='25:99' is not HH:MM" <<<"$(FLUX_SERVER_DIR=/tmp/srv5 GAME_PORT=31005 GMOD_RESTART_TIME=25:99 timeout 8 /opt/flux/flux-entrypoint.sh 2>&1)")"
+pkill -f 'srcds_linux|script -qfec' 2>/dev/null
 
 # --- flux.log is local; the banner ----------------------------------------------------------------
 fl_srv=/tmp/srv

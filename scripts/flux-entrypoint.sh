@@ -28,11 +28,23 @@ FLUX_STOP_GRACE="${FLUX_STOP_GRACE:-30}"
 s="${FLUX_SERVER_DIR}"
 g="${FLUX_GAME_DIR}"
 
+
 rm -f "${FLUX_RESTART_MARKER}"
 mkdir -p "${s}" "${g}" "${g}/flux" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
 # An older image kept flux.log on the synced data volume: move it here, once.
 flux_log_migrate "${FLUX_GAME_DIR}/flux/flux.log"
 flux_banner "Garry's Mod"
+
+FLUX_NEXT_RESTART_FILE="${FLUX_NEXT_RESTART_FILE:-/tmp/flux-next-restart}"
+FLUX_RESTART_WAIT_MINUTES="${FLUX_RESTART_WAIT_MINUTES:-30}"
+rm -f "${FLUX_NEXT_RESTART_FILE}"
+# GMOD_RESTART_TIME=HH:MM (in TZ, UTC when unset): a daily restart on an empty server; the next start also
+# takes any game update. Empty or off = never.
+if ! restart_at="$(flux_restart_time "${GMOD_RESTART_TIME:-}")"; then
+  flux_log "WARN GMOD_RESTART_TIME='${GMOD_RESTART_TIME}' is not HH:MM; no daily restart"
+  restart_at=""
+fi
+restart_pid=""
 
 if ! port="$(flux_valid_port "${GAME_PORT:-27015}")"; then
   flux_log "ERROR GAME_PORT='${GAME_PORT:-}' is not a port from 1024 to 65535; refusing to start"
@@ -70,26 +82,75 @@ trap 'term_handler TERM' TERM
 trap 'term_handler INT' INT
 
 update_server() {
-  local attempt validate
+  local attempt validate steam_home steam_rc steam_pid tail_pid fresh=0 acf="${s}/steamapps/appmanifest_${FLUX_STEAM_APP}.acf"
   if flux_truthy "${SKIP_UPDATE:-}" && [ -x "${s}/srcds_run" ]; then
     flux_log "SKIP_UPDATE is set: not updating the server files"
     return 0
+  fi
+  # SteamCMD's depotcache onto the INSTALL volume (local to the node, never synced). It holds the manifests of
+  # the installed build, which the NEXT update needs and which Steam refuses to an anonymous login once a build
+  # is old; in the container's own layer they are lost on every redeploy and the first update after it fails with
+  # "state is 0x6 after update job".
+  steam_home="${HOME:-/root}/.local/share/Steam"
+  mkdir -p "${s}/flux-steam/depotcache" "${steam_home}"
+  if [ ! -L "${steam_home}/depotcache" ]; then
+    [ -d "${steam_home}/depotcache" ] && cp -an "${steam_home}/depotcache/." "${s}/flux-steam/depotcache/" 2>/dev/null
+    rm -rf "${steam_home}/depotcache"
+    ln -s "${s}/flux-steam/depotcache" "${steam_home}/depotcache"
   fi
   flux_log "updating the server from Steam (app ${FLUX_STEAM_APP})"
   # No `validate` on the first attempt: it re-hashes the whole 7 GB install, and would put back
   # stock files the owner changed in the game folder. A broken install fails the first attempt,
   # and every retry validates.
   validate=""
+  # A stop in the middle of a fresh install leaves the old build's record only as .pre-fresh.
+  [ ! -f "${acf}" ] && [ -f "${acf}.pre-fresh" ] && [ -x "${s}/srcds_run" ] && cp -f "${acf}.pre-fresh" "${acf}"
   for attempt in 1 2 3 4 5; do
+    [ "${terminating}" = "1" ] && return 1
+    # SteamCMD runs in the BACKGROUND and is waited for: bash runs a trap only once its foreground command
+    # ends, so a stop during the download would otherwise wait out Docker's 10 seconds and be killed.
+    # The log is a file (the 0x6 check reads it); a tail that ends with SteamCMD shows it live.
+    : >/tmp/steamcmd.log
     # shellcheck disable=SC2086  # validate is "" or "validate"
-    if steamcmd +force_install_dir "${s}" +login anonymous +app_update "${FLUX_STEAM_APP}" ${validate} +quit; then
+    steamcmd +force_install_dir "${s}" +login anonymous +app_update "${FLUX_STEAM_APP}" ${validate} +quit >/tmp/steamcmd.log 2>&1 &
+    steam_pid=$!
+    tail -n +1 -f --pid="${steam_pid}" /tmp/steamcmd.log &
+    tail_pid=$!
+    wait "${steam_pid}"
+    steam_rc=$?
+    if [ "${terminating}" = "1" ]; then
+      # A stop during the download: SteamCMD ends with it. A plain update resumes at the next start; a fresh
+      # install over the top (the 0x6 fallback) starts the download again, with the old build's record put back.
+      kill "${steam_pid}" "${tail_pid}" 2>/dev/null
+      return 1
+    fi
+    wait "${tail_pid}" 2>/dev/null
+    # A "state is 0x6" in the log is a failure whatever SteamCMD's exit code says: the old build's files are
+    # still there, so a 0 exit would otherwise start the old build and the fallback below would never run.
+    if [ "${steam_rc}" = "0" ] && ! grep -aqE "state is 0x6( |$)" /tmp/steamcmd.log; then
+      rm -f "${acf}.pre-fresh"
       return 0
     fi
     [ "${terminating}" = "1" ] && return 1
-    validate="validate"
-    flux_log "WARN steamcmd failed (attempt ${attempt}/5); retrying in 5s with validate"
-    sleep 5
+    if grep -aqE "state is 0x6( |$)" /tmp/steamcmd.log && [ "${fresh}" = "0" ] && [ -f "${acf}" ]; then
+      # An update from build A to B needs A's depot manifests (the depotcache above). When they are gone Steam
+      # will NOT hand an old manifest to an anonymous login, and neither retrying nor validate gets past it:
+      # only a fresh install over the top does (the whole download again). Once, and only for "state is 0x6",
+      # never for a network failure, which a re-download cannot fix.
+      fresh=1
+      validate=""
+      [ -f "${acf}.pre-fresh" ] || cp -f "${acf}" "${acf}.pre-fresh"
+      rm -rf "${acf}" "${s}/steamapps/downloading" "${s}/steamapps/temp"
+      flux_log "WARN Steam no longer serves the installed build's manifests; updating as a new install"
+    else
+      validate="validate"
+    fi
+    flux_log "WARN steamcmd failed (attempt ${attempt}/5); retrying in 5s${validate:+ with validate}"
+    sleep 5 &
+    wait $!
   done
+  # The fresh install did not finish: put the old build's record back.
+  [ "${fresh}" = "1" ] && [ -f "${acf}.pre-fresh" ] && cp -f "${acf}.pre-fresh" "${acf}"
   if [ -x "${s}/srcds_run" ]; then
     flux_log "WARN could not update from Steam; starting the build already installed"
     return 0
@@ -121,12 +182,45 @@ console_writer() {
   done
 }
 
+# Waits for an empty server (no human players) for up to $1 minutes, checking every minute. An unknown
+# count (the query does not answer) is never "empty".
+wait_for_empty() {
+  local until=$(($(date -u +%s) + $1 * 60)) n
+  while [ "$(date -u +%s)" -lt "${until}" ] && [ "${terminating}" = "0" ]; do
+    n="$(python3 /opt/flux/flux-a2s.py players "${GAME_PORT}" 2>/dev/null)"
+    [ "${n}" = "0" ] && return 0
+    sleep 60
+  done
+  return 0
+}
+
+# The daily restart: at the time set, wait for an empty server (at most FLUX_RESTART_WAIT_MINUTES), then
+# ask the server to quit; the supervisor starts the next generation, which also updates the game.
+# shellcheck disable=SC2329  # run as a background job
+restart_watcher() {
+  local next
+  # A time that does not exist today (the clock jumps over it) has no next occurrence: look again in an hour.
+  until next="$(flux_next_daily "$(date -u +%s)" "${restart_at}")"; do sleep 3600; done
+  printf '%s\n' "${next}" >"${FLUX_NEXT_RESTART_FILE}"
+  while [ "$(date -u +%s)" -lt "${next}" ]; do sleep 30; done
+  flux_log "daily restart (${restart_at} ${TZ:-UTC}): waiting up to ${FLUX_RESTART_WAIT_MINUTES} min for an empty server"
+  wait_for_empty "${FLUX_RESTART_WAIT_MINUTES}"
+  [ "${terminating}" = "1" ] && return 0
+  [ -f "${FLUX_RESTART_MARKER}" ] && return 0
+  printf 'planned: the daily restart (%s %s)\n' "${restart_at}" "${TZ:-UTC}" >"${FLUX_RESTART_MARKER}"
+  flux_log "planned: the daily restart: restarting the server"
+  flux-console quit >/dev/null 2>&1
+}
+
 start_generation() {
   local launch line build
   generation=$((generation + 1))
   rm -f "${FLUX_RESTART_MARKER}" "${FLUX_EXIT_FILE}"
 
-  update_server || return 1
+  if ! update_server; then
+    [ "${terminating}" = "1" ] && return 2
+    return 1
+  fi
   [ "${terminating}" = "1" ] && return 2
 
   # The build, for the panel's Overview: garrysmod.ver names it.
@@ -156,6 +250,11 @@ start_generation() {
   game_pid=$!
   ready_watcher &
   ready_pid=$!
+  rm -f "${FLUX_NEXT_RESTART_FILE}"
+  if [ -n "${restart_at}" ]; then
+    restart_watcher &
+    restart_pid=$!
+  fi
   return 0
 }
 
@@ -179,6 +278,12 @@ sweep_generation() {
     { kill -KILL "${ready_pid}" && wait "${ready_pid}"; } 2>/dev/null
   fi
   ready_pid=""
+  # The daily-restart watcher belongs to this generation: the next one starts its own.
+  if [ -n "${restart_pid}" ] && [[ " $(jobs -pr | tr '\n' ' ') " == *" ${restart_pid} "* ]]; then
+    { kill -KILL "${restart_pid}" && wait "${restart_pid}"; } 2>/dev/null
+  fi
+  restart_pid=""
+  rm -f "${FLUX_NEXT_RESTART_FILE}"
   game_pid=""
 }
 
