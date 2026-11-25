@@ -49,6 +49,8 @@ lis() { TZ=Europe/Lisbon date -d "@$(TZ=Europe/Lisbon flux_next_daily "$(TZ=Euro
 check "the 25-hour day: 00:15 already passed, the next is tomorrow's, not a repeat an hour on" "2026-10-26 00:15" "$(lis '2026-10-25 00:30' 00:15)"
 check "and later the same day, still tomorrow" "2026-10-26 00:15" "$(lis '2026-10-25 00:59' 00:15)"
 check "the 23-hour day: 23:30 asking for 23:00 gets the next day (Sunday), not a skipped one" "2026-03-29 23:00" "$(lis '2026-03-28 23:30' 23:00)"
+ny() { TZ=America/New_York date -d "@$(TZ=America/New_York flux_next_daily "$(TZ=America/New_York date -d "$1" +%s)" "$2")" '+%F %H:%M'; }
+check "a time the clocks skip (New York 2027-03-14 02:30) is taken an hour later, not skipped" "2027-03-14 03:30" "$(ny '2027-03-13 20:00' 02:30)"
 check "a planned restart is not counted against the budget" "1" "$(status flux_restart_counts 'planned: the daily restart (06:00 UTC)')"
 
 # --- Human players from an A2S_INFO reply ---------------------------------------------------------
